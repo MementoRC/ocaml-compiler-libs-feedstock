@@ -1,5 +1,10 @@
 context:
   version: "0.17.0"
+  build_number: 1
+
+  # ocaml_win-64 ships gcc_* and vs2022_* at the same version/build; name the track.
+  c_toolchain: ${{ "" if unix else c_compiler ~ "_*" }}
+  library: ${{ "Library/" if not unix else "" }}
 
 package:
   name: ocaml-compiler-libs
@@ -10,27 +15,60 @@ source:
   sha256: 9b9644d7351db699e57ddba7c767bb4153e6e988ccf45ead2fb238a3bd75cdc7
 
 build:
-  number: 0
-  skip:
-    - win
+  number: ${{ build_number }}
+  string: ${{ c_compiler ~ "_" if not unix }}h${{ hash }}_${{ build_number }}
   script:
-    - dune build --profile=release -p ocaml-compiler-libs @install
-    - dune install --prefix="${PREFIX}" --libdir="${PREFIX}/lib/ocaml" ocaml-compiler-libs
+    - if: unix
+      then:
+        - dune build --profile=release -p ocaml-compiler-libs @install
+        - dune install --prefix="${PREFIX}" --libdir="${PREFIX}/lib/ocaml" ocaml-compiler-libs
+      else:
+        # Plain cmd.exe, not MSYS2 bash: pure OCaml, no stubs, so no wrapper is
+        # needed and the backslashed install prefix reaches dune intact. The
+        # dune cache trips over mixed path separators on windows.
+        - dune build --cache=disabled --profile=release -p ocaml-compiler-libs @install
+        - if errorlevel 1 exit 1
+        - dune install --prefix="%LIBRARY_PREFIX%" --libdir="%LIBRARY_PREFIX%\lib\ocaml" ocaml-compiler-libs
+        - if errorlevel 1 exit 1
 
 requirements:
   build:
-    - ${{ stdlib("c") }}
-    - ${{ compiler("ocaml") }}
+    - if: not unix and c_compiler == "gcc"
+      then:
+        - ${{ stdlib("m2w64_c") }}
+      else:
+        - ${{ stdlib("c") }}
+    - ocaml_${{ target_platform }} ${{ ocaml_compiler_version }}.* ${{ c_toolchain }}
+    - if: build_platform != target_platform
+      then:
+        - ocaml ${{ ocaml_compiler_version }}.*
     - ocaml-dune >=1.5.1
   host:
-    - ocaml >=5.2.0
+    - ocaml ${{ ocaml_compiler_version }}.*
+    - ocaml_${{ target_platform }} ${{ ocaml_compiler_version }}.* ${{ c_toolchain }}
+    # The mingw (ucrt64) toolchain links api-ms-win-crt-*.dll. On vs2022 the
+    # MSVC runtime run_exports bring ucrt into run; on gcc nothing does, and a
+    # host-only ucrt still counts as overlinking.
+    - if: not unix and c_compiler == "gcc"
+      then:
+        - ucrt
+  run:
+    - if: not unix and c_compiler == "gcc"
+      then:
+        - ucrt
+  # The ocaml run_export carries no build-string glob, so it does not encode
+  # the windows toolchain track; constrain it explicitly.
+  run_constraints:
+    - if: not unix
+      then:
+        - ocaml_${{ target_platform }} * ${{ c_compiler }}_*
 
 tests:
   - package_contents:
       strict: true
       files:
-        - lib/ocaml/ocaml-compiler-libs/*
-        - doc/ocaml-compiler-libs/*
+        - ${{ library }}lib/ocaml/ocaml-compiler-libs/*
+        - ${{ library }}doc/ocaml-compiler-libs/*
 
 about:
   homepage: https://github.com/janestreet/ocaml-compiler-libs
